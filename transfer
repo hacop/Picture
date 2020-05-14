@@ -1,0 +1,62 @@
+DECLARE @CurrentYrsMth NVARCHAR(8) = '202005'
+    --// DECLARE @CurrentYrsMth NVARCHAR(8); SET @CurrentYrsMth = '201909' 
+    DECLARE @LastYrsMth NVARCHAR(8)
+    
+    SET DATEFIRST 1
+    Declare @TB Table(Category nvarchar(100), RecCnt INT)
+    SET @LastYrsMth = CONVERT(NVARCHAR, DATEADD(D, -1, CAST(@CurrentYrsMth + '01' AS DATETIME)),112)
+    SET @CurrentYrsMth = CONVERT(NVARCHAR,DATEADD(D,-1, DATEADD(M,1,@CurrentYrsMth +'01')),112)
+    --#Optimize
+    DROP TABLE IF EXISTS #NIA_CASE
+    SELECT * INTO #NIA_CASE FROM v_NIACase WHERE nia_source IN ('FEHD-P','FEHD-F')
+    AND CONVERT(NVARCHAR,dbo.fn_getLocalTime(ssss_case_recei_date),112) <= @CurrentYrsMth
+    DROP TABLE IF EXISTS #NIA_Case_NoReceiveDateFilter
+    SELECT * INTO #NIA_Case_NoReceiveDateFilter FROM v_NIACase WHERE nia_source IN ('FEHD-P','FEHD-F')
+    DROP TABLE IF EXISTS #NIA_CaseHistory  -->> With NIA Case source filtering
+    SELECT  ROW_NUMBER() OVER(PARTITION BY ssss_nia_case_noName
+                                  ORDER BY ssss_nia_case_noName,
+                                           ssss_conducted_on desc,
+                                           ssss_saved_on desc) id,  
+            ssss_niastatushistoryId,
+            hist_nc.ssss_nia_case_no,
+            hist_nc.ssss_nia_case_noName, 
+            hist_nc.ssss_nia_status,
+            opt.Value ssss_nia_statusName,
+            dbo.fn_getLocalTime(hist_nc.ssss_conducted_on) LT_ssss_conducted_on,
+            dbo.fn_getLocalTime(ssss_saved_on) LT_ssss_saved_on 
+    INTO #NIA_CaseHistory
+    FROM #NIA_Case nc LEFT JOIN ssss_niastatushistory hist_nc ON nc.ssss_niacaseId = hist_nc.ssss_nia_case_no
+                      LEFT JOIN (SELECT * FROM v_optSetDetail WHERE EntityName = 'ssss_niastatushistory'
+                                                                AND AttributeName = 'ssss_nia_status' ) opt
+    ON opt.AttributeValue = hist_nc.ssss_nia_status             
+    --NL200429
+    --WHERE LEFT(CONVERT(NVARCHAR,dbo.fn_getLocalTime(hist_nc.ssss_conducted_on),112),6) = LEFT(@CurrentYrsMth,6)
+    WHERE hist_nc.ssss_conducted_on < dbo.fn_GetLocalTimeToUTC(DATEADD(DAY, 1, CONVERT(NVARCHAR,@CurrentYrsMth,112)))
+    drop table if exists #testing99
+    -->> BEGIN FEHD ?New Restaurants & Food Factory licences        
+    ;With Appt_NoOfSiteInvestCond AS (
+        SELECT * FROM (
+            SELECT ROW_NUMBER() OVER(PARTITION BY RegardingObjectIdName 
+                                     ORDER BY RegardingObjectIdName, apt.ScheduledStart) Id,
+            apt.ActivityId,
+            apt.RegardingObjectId,
+            apt.RegardingObjectIdName,
+            dbo.fn_getlocaltime(apt.ScheduledStart) LT_ScheduledStart, 
+            ev.PhysicalName  
+            FROM Appointment apt LEFT JOIN EntityView ev ON apt.RegardingObjectTypeCode = ev.ObjectTypeCode 
+            WHERE CONVERT(NVARCHAR,dbo.fn_getlocaltime(apt.ScheduledStart),112) <= @CurrentYrsMth 
+            AND ev.PhysicalName = 'ssss_niacase'
+        ) rs WHERE Id = 1
+             AND LEFT(CONVERT(NVARCHAR,LT_ScheduledStart,112),6) = LEFT(@CurrentYrsMth,6)
+    )
+    , NoOfSiteInvestConduct99 AS (
+        SELECT RegardingObjectId FROM Appt_NoOfSiteInvestCond
+        INTERSECT
+        SELECT ssss_niacaseId 
+        FROM v_NIACase 
+        WHERE nia_source = 'WSD Report Case'
+        AND ssss_cur_sicName = '999998' 
+    )
+    
+    select * into #testing99 from NoOfSiteInvestConduct99
+    select ssss_nia_case_no from v_NIACase where ssss_niacaseId in (select RegardingObjectId from #testing99)
